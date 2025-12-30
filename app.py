@@ -1,79 +1,100 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from transformers import pipeline
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
-import re, os, gc
+import os
 
-# 페이지 설정
-st.set_page_config(page_title="2023 AI Brand Insights", layout="wide")
+# 1. 페이지 설정 및 가독성 향상
+st.set_page_config(page_title="2023 AI Brand Insights", layout="wide", initial_sidebar_state="expanded")
 
-# [해결 핵심] 메모리 부족을 방지하는 스마트 로딩 함수
-@st.cache_resource(show_spinner=False)
-def load_sentiment_model():
-    is_render = "RENDER" in os.environ
-    try:
-        # Render 서버면 가장 용량이 작은 모델을 사용해 503 에러 방지
-        model_name = "prajjwal1/bert-tiny" if is_render else "distilbert-base-uncased-finetuned-sst-2-english"
-        return pipeline("sentiment-analysis", model=model_name, device=-1)
-    except:
-        return None
-
+# 데이터 로드 함수 (일련번호 1번부터 시작)
 def load_data(filename):
-    if not os.path.exists(filename): return pd.DataFrame()
-    df = pd.read_csv(filename, encoding='utf-8-sig')
-    # 일련번호 1번 시작
-    df.index = df.index + 1
-    return df
+    if not os.path.exists(filename): 
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(filename, encoding='utf-8-sig')
+        # 인덱스를 1부터 시작하도록 설정
+        df.index = df.index + 1 
+        return df
+    except:
+        return pd.DataFrame()
 
-# 사이드바 구성 및 요청 문구 반영
+# 2. 사이드바 내비게이션
 with st.sidebar:
     st.title("🚀 Navigate & Analysis")
-    st.markdown(f'<div style="background-color:#f8f9fa;padding:12px;border-radius:8px;border:1;margin-bottom:20px;">'
-                f'🔎 Explore what\'s happening with your brand.</div>', unsafe_allow_html=True)
+    
+    # 요청하신 노멀한 안내 문구 적용
+    st.markdown("""
+        <div style="background-color: #f8f9fa; padding: 12px; border-radius: 8px; border: 1px solid #eee; margin-bottom: 20px;">
+            <p style="margin: 0; font-size: 0.9em; color: #444; line-height: 1.4;">
+                🔎 Explore what's happening with your brand.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     
     menu = st.radio("Go to", ["📦 Product Insights", "💬 Testimonial Stories", "⭐ Review Analytics"], index=2)
+    st.markdown("---")
+    
+    # 월 선택 슬라이더 (Review Analytics 전용)
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     sel_month = st.select_slider("Select Month", options=range(1, 13), format_func=lambda x: month_names[x-1])
 
+# 3. 메인 콘텐츠 영역
 if menu == "⭐ Review Analytics":
     st.title("⭐ Deep Learning Review Analysis")
-    df = load_data("reviews.csv")
+    
+    # [핵심] 503 에러 방지를 위해 로컬에서 분석 완료된 파일 로드
+    df = load_data("reviews_analyzed.csv")
+    
     if not df.empty:
+        # 날짜 필터링
         df['Date_dt'] = pd.to_datetime(df['Date'])
         filtered = df[df['Date_dt'].dt.month == sel_month].copy()
         
         if not filtered.empty:
-            # [해결] 스피너 메시지 최적화 및 분석 실행
-            with st.status(f"Analyzing {month_names[sel_month-1]} reviews...", expanded=True) as status:
-                st.write("Loading AI model into memory...")
-                analyzer = load_sentiment_model()
-                if analyzer:
-                    st.write("Computing sentiment scores...")
-                    results = analyzer(filtered['Text'].tolist())
-                    filtered['Sentiment'] = ["POSITIVE" if r['label'] in ['LABEL_1', 'POSITIVE'] else "NEGATIVE" for r in results]
-                    filtered['Confidence'] = [r['score'] for r in results]
-                    # 분석 완료 후 즉시 모델 관련 메모리 수동 해제
-                    del results
-                    gc.collect()
-                    status.update(label="Analysis Complete!", state="complete", expanded=False)
-
-            # 시각화 부분
+            # 성공 안내 문구는 요청에 따라 삭제했습니다.
+            
             c1, c2 = st.columns(2)
             with c1:
+                st.subheader("📊 Sentiment Distribution")
+                
+                # 감성별 통계 계산
                 chart_data = filtered.groupby('Sentiment')['Confidence'].agg(['count', 'mean']).reset_index()
+                chart_data.columns = ['Sentiment', 'Review Count', 'Avg. Confidence']
+                
+                # [디자인] 요청에 따라 Avg. Confidence를 포함한 모든 라벨을 굵게(bold) 처리
                 chart_data['Display Label'] = chart_data.apply(
-                    lambda x: f"<b>{x['Sentiment']}</b><br>Avg. Confidence ({x['mean']:.4f})", axis=1)
-                fig = px.bar(chart_data, x='Display Label', y='count', color='Sentiment',
+                    lambda x: f"<b>{x['Sentiment']}</b><br><b>Avg. Confidence ({x['Avg. Confidence']:.4f})</b>", 
+                    axis=1
+                )
+                
+                # 시각화 차트 생성
+                fig = px.bar(chart_data, 
+                             x='Display Label', 
+                             y='Review Count', 
+                             color='Sentiment',
                              color_discrete_map={'POSITIVE': '#00b894', 'NEGATIVE': '#ff7675'})
-                fig.update_layout(xaxis_title="", yaxis_title="Review Count")
+                
+                fig.update_traces(texttemplate='%{y}', textposition='outside')
+                fig.update_layout(xaxis_title="", yaxis_title="Review Count", xaxis={'tickangle': 0})
                 st.plotly_chart(fig, use_container_width=True)
+                
             with c2:
-                wc = WordCloud(background_color="white").generate(" ".join(filtered['Text']))
-                fig_wc, ax = plt.subplots(); ax.imshow(wc); ax.axis("off")
-                st.pyplot(fig_wc)
-else:
-    st.title(menu)
-    df = load_data("products.csv" if "Product" in menu else "testimonials.csv")
-    st.dataframe(df, use_container_width=True)
+                st.subheader("☁️ Word Cloud")
+                text_content = " ".join(filtered['Text'])
+                if text_content.strip():
+                    wc = WordCloud(background_color="white", width=800, height=500).generate(text_content)
+                    fig_wc, ax = plt.subplots(); ax.imshow(wc); ax.axis("off")
+                    st.pyplot(fig_wc)
+        else:
+            st.warning(f"No reviews found for {month_names[sel_month-1]}.")
+    else:
+        st.error("reviews_analyzed.csv 파일을 찾을 수 없습니다. 로컬에서 먼저 분석 스크립트를 실행해 주세요.")
+
+else: # Product Insights 또는 Testimonial Stories 메뉴
+    st.title(f"{menu}")
+    filename = "products.csv" if "Product" in menu else "testimonials.csv"
+    df = load_data(filename)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
